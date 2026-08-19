@@ -30,7 +30,7 @@ While the chamber is enabled, it is polled during every PalmSens measurement ste
 
 ## Run
 
-Python 3.12 or newer is required. From the repository root, the shortest setup is with [uv](https://docs.astral.sh/uv/):
+Python 3.12 or newer and Emstat4 1.5.02 or newer is required. From the repository root, the shortest setup is with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv run palmsens-ui
