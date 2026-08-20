@@ -379,8 +379,8 @@ def _extract_bdf_series(group, optional_quantity_keys: set[str] | None = None) -
         quantity = getattr(data_array, "quantity", "")
         unit = getattr(data_array, "unit", "")
         values = data_array.to_numpy()
-
         column_key = _detect_bdf_column(base_key, array_name, array_type, quantity, unit)
+
         if column_key is None or column_key in series:
             continue
         if optional_quantity_keys is not None:
