@@ -184,7 +184,7 @@ def _normalize_text(value) -> str:
 
 _BDF_TERMS = (
     _term("ac_internal_resistance_ohm", "AC Internal Resistance / ohm", ("ac_resistance_ohm", "acr"), _RESISTANCE_FACTORS),
-    _term("absolute_impedance_ohm", "Absolute Impedance / ohm", ("impedance_modulus", "z_abs", "abs_z"), _RESISTANCE_FACTORS),
+    _term("absolute_impedance_ohm", "Absolute Impedance / ohm", ("impedance", "impedance_modulus", "z", "z_abs", "abs_z"), _RESISTANCE_FACTORS),
     _term("ambient_pressure_pa", "Ambient Pressure / Pa", ("ambient_pressure_pascal", "ambient_pressure", "ambient_air_pressure"), _PRESSURE_FACTORS),
     _term("ambient_temperature_celsius", "Ambient Temperature / degC", ("ambient_temperature_degc", "chamber_temperature", "environment_temperature"), _TEMPERATURE_FACTORS),
     _term("applied_pressure_pa", "Applied Pressure / Pa", ("applied_pressure_pascal", "applied_pressure"), _PRESSURE_FACTORS),
@@ -237,10 +237,13 @@ _BDF_TERMS = (
     _term("test_time_second", "Test Time / s", ("test_time_s", "test_time", "testtime", "elapsed_time", "elapsedtime", "time"), _TIME_FACTORS, required=True),
     _term("unix_time_second", "Unix Time / s", ("unix_time_s", "unix_time", "timestamp", "epoch_time"), _TIME_FACTORS),
     _term("voltage_volt", "Voltage / V", ("voltage_v", "voltage", "potential", "e", "v"), _VOLTAGE_FACTORS, required=True),
+    _term("voltage_wevsce_volt", "Voltage Full Cell / V", ("full_cell_voltage", "full_cell", "potentialwevsce"), _VOLTAGE_FACTORS),
 )
 
 _BDF_TERMS_BY_KEY = {term.key: term for term in _BDF_TERMS}
 _REQUIRED_BDF_KEYS = tuple(term.key for term in _BDF_TERMS if term.required)
+_CUSTOM_BDF_KEYS = {"voltage_wevsce_volt"}
+_WEVSCE_IDENTIFIERS = {"potentialwevsce", "voltagewevsce", "wevsce"}
 _STEP_DERIVED_KEYS = {
     "step_charging_capacity_ah",
     "step_discharging_capacity_ah",
@@ -298,7 +301,9 @@ def export_measurement_to_bdf_files(
 
             dataframe = _build_dataframe(series)
             dataframes.append(dataframe)
-            res = bdf.validate(dataframe, raise_on_error=True)
+            known_bdf_labels = {term.label for term in _BDF_TERMS if term.key not in _CUSTOM_BDF_KEYS}
+            validation_df = dataframe[[col for col in dataframe.columns if col in known_bdf_labels]]
+            res = bdf.validate(validation_df, raise_on_error=True)
             if not res["ok"]:
                 raise BdfExportError("Invalid battery data format dataframe")
     if not dataframes:
@@ -448,6 +453,9 @@ def _raw_dependency_keys(optional_quantity_keys: set[str] | None) -> set[str]:
     if optional_quantity_keys.intersection({"absolute_impedance_ohm", "phase_degree"}):
         keys.update({"real_impedance_ohm", "imaginary_impedance_ohm"})
 
+    if optional_quantity_keys.intersection({"real_impedance_ohm", "imaginary_impedance_ohm"}):
+        keys.update({"absolute_impedance_ohm", "phase_degree"})
+
     if optional_quantity_keys.intersection(_STEP_DERIVED_KEYS):
         keys.update({"step_count", "step_id", "step_time_second"})
 
@@ -485,6 +493,17 @@ def _derive_bdf_series(series: dict[str, list], optional_quantity_keys: set[str]
             series["absolute_impedance_ohm"] = [math.hypot(re, im) for re, im in zip(real, imag)]
         if _quantity_requested("phase_degree", series, optional_quantity_keys):
             series["phase_degree"] = [math.degrees(math.atan2(im, re)) for re, im in zip(real, imag)]
+
+    if (
+        not _has_keys(series, "real_impedance_ohm", "imaginary_impedance_ohm")
+        and _has_keys(series, "absolute_impedance_ohm", "phase_degree")
+    ):
+        z_abs = series["absolute_impedance_ohm"]
+        phase = series["phase_degree"]
+        if _quantity_requested("real_impedance_ohm", series, optional_quantity_keys):
+            series["real_impedance_ohm"] = [z * math.cos(math.radians(p)) for z, p in zip(z_abs, phase)]
+        if _quantity_requested("imaginary_impedance_ohm", series, optional_quantity_keys):
+            series["imaginary_impedance_ohm"] = [z * math.sin(math.radians(p)) for z, p in zip(z_abs, phase)]
 
     _derive_capacity_series(
         series,
@@ -708,6 +727,12 @@ def _detect_bdf_column(base_key: str, array_name: str, array_type: str, quantity
         _normalize_text(quantity),
     )
     unit_key = _normalize_unit(unit)
+    raw_unit = str(unit).strip()
+
+    # This is another voltage array, so identify it before generic aliases such
+    # as "potential" or the voltage-unit fallback can claim it.
+    if any(identifier in text for text in texts for identifier in _WEVSCE_IDENTIFIERS):
+        return "voltage_wevsce_volt"
 
     for text in texts:
         column_key = _BDF_ALIAS_TO_KEY.get(text)
@@ -719,7 +744,7 @@ def _detect_bdf_column(base_key: str, array_name: str, array_type: str, quantity
         if any(len(alias) >= 3 and alias in text for text in texts for alias in aliases):
             return term.key
 
-    if unit_key in _TIME_FACTORS:
+    if unit_key in _TIME_FACTORS and raw_unit != "S":
         return "test_time_second"
     if unit_key in _VOLTAGE_FACTORS:
         return "voltage_volt"

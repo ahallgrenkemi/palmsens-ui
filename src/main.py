@@ -2,6 +2,7 @@ import sys
 from datetime import date
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -73,6 +74,10 @@ def _sanitize_filename_component(value: str) -> str:
     cleaned = "".join(character if character.isalnum() else "_" for character in value.strip())
     return cleaned.strip("_")
 
+def _abbreviate_filename_component(value: str) -> str:
+    cleaned = _sanitize_filename_component(value or "step")
+    short = "".join(part[0].upper() for part in cleaned.split("_") if part)
+    return short
 
 def _default_bdf_export_stem(cell_name: str, cas_id: str, sequence_number: int) -> str:
     sanitized_cell_name = _sanitize_filename_component(cell_name)
@@ -94,7 +99,7 @@ def _custom_bdf_export_stem(
         _sanitize_filename_component(str(measurement_number)) or "x",
     ]
     if include_step_type:
-        parts.append(_sanitize_filename_component(step_type or "step") or "step")
+        parts.append(_abbreviate_filename_component(step_type or "step") or "step")
     return "_".join(parts)
 
 
@@ -108,6 +113,61 @@ class BdfAutoSaveSettings:
     custom_naming_enabled: bool = False
     custom_base_name: str = ""
     include_step_type: bool = False
+
+
+@dataclass(frozen=True)
+class MeasurementEditorState:
+    run_mode: str
+    method_key: str
+    native_params: dict[str, str]
+    script_text: str
+    imported_package: Any
+    imported_package_path: Path | None
+    aurora_sample_name: str
+    aurora_capacity: str
+    aurora_device_key: str
+    aurora_scan_step: str
+    aurora_eis_dc_potential: str
+    aurora_eis_dc_current: str
+    additional_measurements: tuple[str, ...]
+    auto_bdf_enabled: bool
+    auto_bdf_output_dir: str
+    auto_bdf_export_type: str
+    auto_bdf_cell_name: str
+    auto_bdf_cas_id: str
+    custom_naming_enabled: bool
+    custom_base_name: str
+    include_step_type: bool
+    temperature_enabled: bool
+    temperature_tolerance: str
+    temperature_log_dir: str
+    temperature_stop_on_abort: bool
+
+
+@dataclass(frozen=True)
+class SavedMeasurementConfiguration:
+    editor_state: MeasurementEditorState
+    method_label: str
+    aurora_export_settings: AuroraExportSettings | None
+    temperature_settings: TemperatureSettings | None
+    bdf_auto_save_settings: BdfAutoSaveSettings | None
+
+    def build_method(self):
+        state = self.editor_state
+        if state.run_mode == "native":
+            return build_method(state.method_key, state.native_params)
+        if state.run_mode == "methodscript":
+            if not hasattr(ps, "MethodScript"):
+                raise RuntimeError("This PyPalmSens installation does not expose MethodScript.")
+            return ps.MethodScript(script=state.script_text)
+        if state.run_mode == "aurora_package":
+            if state.imported_package is None or self.aurora_export_settings is None:
+                raise RuntimeError("The saved Aurora package configuration is incomplete.")
+            return build_aurora_stepwise_method(
+                state.imported_package,
+                self.aurora_export_settings,
+            )
+        raise ValueError(f"Unsupported run mode: {state.run_mode}")
 
 
 class connection_indicator(QLabel):
@@ -395,17 +455,62 @@ class bdf_export_dialog(QDialog):
         self.accept()
 
 
+class configuration_copy_dialog(QDialog):
+    def __init__(self, panels: list[graph_panel], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Copy Measurement Settings")
+        self.setMinimumWidth(360)
+        self._checkboxes: list[tuple[QCheckBox, graph_panel]] = []
+
+        layout = QVBoxLayout(self)
+        info_label = QLabel(
+            "Choose the idle channels that should receive these measurement settings. "
+            "Running channels are not listed.",
+            self,
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        for panel in panels:
+            checkbox = QCheckBox(panel.base_title, self)
+            self._checkboxes.append((checkbox, panel))
+            layout.addWidget(checkbox)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        copy_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if copy_button is not None:
+            copy_button.setText("Copy")
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def selected_panels(self) -> list[graph_panel]:
+        return [panel for checkbox, panel in self._checkboxes if checkbox.isChecked()]
+
+    def validate_and_accept(self):
+        if not self.selected_panels():
+            QMessageBox.warning(self, "Copy settings", "Select at least one target channel.")
+            return
+        self.accept()
+
+
 class method_configuration_dialog(QDialog):
+    copy_requested = Signal(object)
+
     def __init__(
         self,
         title: str,
         instrument=None,
         current_range_options: dict[str, tuple[str, ...]] | None = None,
+        configuration: SavedMeasurementConfiguration | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.setObjectName("methodConfigDialog")
-        self.setWindowTitle(f"Run Measurement - {title}")
+        self.setWindowTitle(f"Measurement Settings - {title}")
         self.resize(760, 620)
         self.setMinimumSize(560, 420)
         self.dialog_title = title
@@ -413,6 +518,8 @@ class method_configuration_dialog(QDialog):
         self.method_label = ""
         self.temperature_settings = None
         self.bdf_auto_save_settings = None
+        self.saved_configuration: SavedMeasurementConfiguration | None = None
+        self.action: str | None = None
         self.instrument = instrument
         self.current_range_options = current_range_options or {}
         self.imported_package = None
@@ -732,15 +839,15 @@ class method_configuration_dialog(QDialog):
         self.scroll_area.setWidget(self.scroll_content)
         dialog_layout.addWidget(self.scroll_area, 1)
 
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            parent=self,
-        )
-        self.run_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
-        if self.run_button is not None:
-            self.run_button.setText("Run")
-        button_box.accepted.connect(self.validate_and_accept)
-        button_box.rejected.connect(self.reject)
+        button_box = QDialogButtonBox(parent=self)
+        self.clear_button = button_box.addButton("Clear", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.copy_button = button_box.addButton("Copy to…", QDialogButtonBox.ButtonRole.ActionRole)
+        self.save_button = button_box.addButton("Save", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.run_button = button_box.addButton("Run", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.clear_button.clicked.connect(self.clear_configuration)
+        self.copy_button.clicked.connect(lambda: self.validate_and_finish("copy"))
+        self.save_button.clicked.connect(lambda: self.validate_and_finish("save"))
+        self.run_button.clicked.connect(lambda: self.validate_and_finish("run"))
         dialog_layout.addWidget(button_box)
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
@@ -761,6 +868,8 @@ class method_configuration_dialog(QDialog):
         self.update_auto_bdf_fields()
         self.rebuild_fields()
         self.rebuild_mode()
+        if configuration is not None:
+            self.apply_editor_state(configuration.editor_state)
 
     def selected_method_key(self) -> str:
         return self.method_combo.currentData()
@@ -776,6 +885,82 @@ class method_configuration_dialog(QDialog):
             elif isinstance(widget, NoScrollComboBox):
                 params[field_key] = str(widget.currentData())
         return params
+
+    def editor_state(self) -> MeasurementEditorState:
+        return MeasurementEditorState(
+            run_mode=self.selected_run_mode(),
+            method_key=self.selected_method_key(),
+            native_params=self.raw_params(),
+            script_text=self.script_editor.toPlainText(),
+            imported_package=self.imported_package,
+            imported_package_path=self.imported_package_path,
+            aurora_sample_name=self.aurora_sample_name_edit.text(),
+            aurora_capacity=self.aurora_capacity_edit.text(),
+            aurora_device_key=str(self.aurora_device_combo.currentData() or ""),
+            aurora_scan_step=self.aurora_scan_step_edit.text(),
+            aurora_eis_dc_potential=self.aurora_eis_dc_potential_edit.text(),
+            aurora_eis_dc_current=self.aurora_eis_dc_current_edit.text(),
+            additional_measurements=self.selected_additional_measurements(),
+            auto_bdf_enabled=self.aurora_auto_bdf_checkbox.isChecked(),
+            auto_bdf_output_dir=self.aurora_auto_bdf_dir_edit.text(),
+            auto_bdf_export_type=str(self.aurora_auto_bdf_type_combo.currentData() or "csv"),
+            auto_bdf_cell_name=self.aurora_auto_bdf_cell_name_edit.text(),
+            auto_bdf_cas_id=self.aurora_auto_bdf_cas_id_edit.text(),
+            custom_naming_enabled=self.aurora_custom_naming_checkbox.isChecked(),
+            custom_base_name=self.aurora_custom_base_name_edit.text(),
+            include_step_type=self.aurora_custom_step_type_checkbox.isChecked(),
+            temperature_enabled=self.temperature_enabled_checkbox.isChecked(),
+            temperature_tolerance=self.temperature_tolerance_edit.text(),
+            temperature_log_dir=self.temperature_log_dir_edit.text(),
+            temperature_stop_on_abort=self.temperature_stop_on_abort_checkbox.isChecked(),
+        )
+
+    def apply_editor_state(self, state: MeasurementEditorState):
+        self._set_combo_value(self.run_mode_combo, state.run_mode)
+        self._set_combo_value(self.method_combo, state.method_key)
+        for field_key, raw_value in state.native_params.items():
+            widget = self.field_widgets.get(field_key)
+            if isinstance(widget, QLineEdit):
+                widget.setText(raw_value)
+            elif isinstance(widget, NoScrollComboBox):
+                self._set_combo_value(widget, raw_value)
+
+        self.script_editor.setPlainText(state.script_text)
+        self.imported_package = state.imported_package
+        self.imported_package_path = state.imported_package_path
+        self.package_info_label.setText(self.package_summary_text())
+        self.aurora_sample_name_edit.setText(state.aurora_sample_name)
+        self.aurora_capacity_edit.setText(state.aurora_capacity)
+        self._set_combo_value(self.aurora_device_combo, state.aurora_device_key)
+        self.aurora_scan_step_edit.setText(state.aurora_scan_step)
+        self.aurora_eis_dc_potential_edit.setText(state.aurora_eis_dc_potential)
+        self.aurora_eis_dc_current_edit.setText(state.aurora_eis_dc_current)
+        selected_measurements = set(state.additional_measurements)
+        for var_type, checkbox in self.additional_measurement_checks.items():
+            checkbox.setChecked(checkbox.isEnabled() and var_type in selected_measurements)
+
+        self.aurora_auto_bdf_checkbox.setChecked(state.auto_bdf_enabled)
+        self.aurora_auto_bdf_dir_edit.setText(state.auto_bdf_output_dir)
+        self._set_combo_value(self.aurora_auto_bdf_type_combo, state.auto_bdf_export_type)
+        self.aurora_auto_bdf_cell_name_edit.setText(state.auto_bdf_cell_name)
+        self.aurora_auto_bdf_cas_id_edit.setText(state.auto_bdf_cas_id)
+        self.aurora_custom_naming_checkbox.setChecked(state.custom_naming_enabled)
+        self.aurora_custom_base_name_edit.setText(state.custom_base_name)
+        self.aurora_custom_step_type_checkbox.setChecked(state.include_step_type)
+        self.temperature_enabled_checkbox.setChecked(state.temperature_enabled)
+        self.temperature_tolerance_edit.setText(state.temperature_tolerance)
+        self.temperature_log_dir_edit.setText(state.temperature_log_dir)
+        self.temperature_stop_on_abort_checkbox.setChecked(state.temperature_stop_on_abort)
+        self.rebuild_mode()
+        self.update_additional_measurements()
+        self.update_temperature_fields()
+        self.update_auto_bdf_fields()
+
+    @staticmethod
+    def _set_combo_value(combo_box: NoScrollComboBox, value: str):
+        index = combo_box.findData(value)
+        if index >= 0:
+            combo_box.setCurrentIndex(index)
 
     def run_channel(self) -> int:
         # run channel will always be 0 as each channel is its own single channel device
@@ -971,9 +1156,10 @@ class method_configuration_dialog(QDialog):
         else:
             self.script_help.clear()
 
-    def validate_and_accept(self):
+    def validate_and_finish(self, action: str):
         try:
             run_mode = self.selected_run_mode()
+            aurora_export_settings = None
             if run_mode == "native":
                 self.method = build_method(self.selected_method_key(), self.raw_params())
                 self.method_label = METHOD_SPECS[self.selected_method_key()].label
@@ -981,6 +1167,11 @@ class method_configuration_dialog(QDialog):
                 self.bdf_auto_save_settings = None
             else:
                 self.method = self.build_script_method(run_mode)
+                aurora_export_settings = (
+                    self.build_aurora_export_settings()
+                    if run_mode == "aurora_package"
+                    else None
+                )
                 self.temperature_settings = (
                     self.build_temperature_settings()
                     if run_mode == "aurora_package"
@@ -1001,6 +1192,21 @@ class method_configuration_dialog(QDialog):
             QMessageBox.warning(self, "Method error", str(exc))
             return
 
+        self.saved_configuration = SavedMeasurementConfiguration(
+            editor_state=self.editor_state(),
+            method_label=self.method_label,
+            aurora_export_settings=aurora_export_settings,
+            temperature_settings=self.temperature_settings,
+            bdf_auto_save_settings=self.bdf_auto_save_settings,
+        )
+        if action == "copy":
+            self.copy_requested.emit(self.saved_configuration)
+            return
+        self.action = action
+        self.accept()
+
+    def clear_configuration(self):
+        self.action = "clear"
         self.accept()
                 
     def build_script_method(self, run_mode: str):
@@ -1176,6 +1382,7 @@ class main_window(QMainWindow):
         self.run_bdf_auto_save_settings: dict[int, BdfAutoSaveSettings] = {}
         self.run_bdf_auto_save_sequences: dict[int, set[int]] = {}
         self.run_bdf_auto_save_failed: set[int] = set()
+        self.saved_measurement_configurations: dict[graph_panel, SavedMeasurementConfiguration] = {}
         self.selected_panel: graph_panel | None = None
         self.channel_statuses: dict[graph_panel, channel_status_snapshot] = {}
         self.pending_device = None
@@ -1513,6 +1720,7 @@ class main_window(QMainWindow):
 
         panel = graph_panel(title, instrument=instrument)
         panel.run_requested.connect(lambda panel=panel: self.run_measurement(panel))
+        panel.edit_requested.connect(lambda panel=panel: self.edit_measurement(panel))
         panel.stop_requested.connect(lambda panel=panel: self.stop_measurement(panel))
         panel.selection_requested.connect(lambda panel=panel: self.select_panel(panel))
         panel.expand_requested.connect(
@@ -1624,10 +1832,11 @@ class main_window(QMainWindow):
         self.expanded_panel = None
         for panel in list(self.panels):
             self.panel_layout.removeWidget(panel)
+            self.saved_measurement_configurations.pop(panel, None)
             self.panels.remove(panel)
             panel.deleteLater()
 
-    def run_measurement(self, panel: graph_panel):
+    def edit_measurement(self, panel: graph_panel):
         self.select_panel(panel)
         if panel.instrument is None:
             QMessageBox.warning(
@@ -1644,14 +1853,129 @@ class main_window(QMainWindow):
             panel.base_title,
             instrument=panel.instrument,
             current_range_options=self.connection_service.current_range_options(panel.instrument),
+            configuration=self.saved_measurement_configurations.get(panel),
             parent=self,
+        )
+        dialog.copy_requested.connect(
+            lambda configuration, panel=panel, dialog=dialog: self.copy_measurement_configuration(
+                panel,
+                configuration,
+                dialog,
+            )
         )
         if not dialog.exec():
             return
 
-        method = dialog.method
-        method_label = dialog.method_label
-        bdf_auto_save_settings = dialog.bdf_auto_save_settings
+        if dialog.action == "clear":
+            self.saved_measurement_configurations.pop(panel, None)
+            panel.set_configured(False)
+            self.statusBar().showMessage(f"Cleared measurement settings for {panel.base_title}.", 5000)
+            return
+
+        configuration = dialog.saved_configuration
+        if configuration is None:
+            return
+        self.saved_measurement_configurations[panel] = configuration
+        panel.set_configured(True)
+        self.statusBar().showMessage(f"Saved measurement settings for {panel.base_title}.", 5000)
+        if dialog.action == "run":
+            self.run_measurement(panel)
+
+    def copy_measurement_configuration(
+        self,
+        source_panel: graph_panel,
+        configuration: SavedMeasurementConfiguration,
+        parent=None,
+    ):
+        eligible_panels = [
+            panel
+            for panel in self.panels
+            if panel is not source_panel
+            and panel.instrument is not None
+            and panel not in self.active_runs
+        ]
+        if not eligible_panels:
+            QMessageBox.information(
+                parent or self,
+                "Copy settings",
+                "There are no other idle channels available.",
+            )
+            return
+
+        copy_dialog = configuration_copy_dialog(eligible_panels, parent or self)
+        if not copy_dialog.exec():
+            return
+
+        copied_panels = []
+        incompatible_panels = []
+        for panel in copy_dialog.selected_panels():
+            if panel in self.active_runs:
+                continue
+            if not self._configuration_is_compatible_with_panel(configuration, panel):
+                incompatible_panels.append(panel)
+                continue
+            self.saved_measurement_configurations[panel] = configuration
+            panel.set_configured(True)
+            copied_panels.append(panel)
+
+        self.saved_measurement_configurations[source_panel] = configuration
+        source_panel.set_configured(True)
+        if copied_panels:
+            channel_names = ", ".join(panel.base_title for panel in copied_panels)
+            self.statusBar().showMessage(f"Copied measurement settings to {channel_names}.", 5000)
+        if incompatible_panels:
+            channel_names = ", ".join(panel.base_title for panel in incompatible_panels)
+            QMessageBox.warning(
+                parent or self,
+                "Incompatible settings",
+                f"Settings were not copied to {channel_names} because the selected current range "
+                "is not supported by those channels.",
+            )
+
+    def _configuration_is_compatible_with_panel(
+        self,
+        configuration: SavedMeasurementConfiguration,
+        panel: graph_panel,
+    ) -> bool:
+        state = configuration.editor_state
+        if state.run_mode != "native":
+            return True
+
+        range_options = self.connection_service.current_range_options(panel.instrument)
+        for field_key in CURRENT_RANGE_FIELD_KEYS:
+            selected_value = state.native_params.get(field_key)
+            supported_values = range_options.get(field_key)
+            if selected_value is not None and supported_values and selected_value not in supported_values:
+                return False
+        return True
+
+    def run_measurement(self, panel: graph_panel):
+        self.select_panel(panel)
+        if panel.instrument is None:
+            QMessageBox.warning(
+                self,
+                "No channel assigned",
+                "Connect to a device and use one of its channel panels to run a measurement.",
+            )
+            return
+        if panel in self.active_runs:
+            return
+
+        configuration = self.saved_measurement_configurations.get(panel)
+        if configuration is None:
+            panel.set_configured(False)
+            return
+
+        try:
+            method = configuration.build_method()
+        except (ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Invalid saved settings", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Method error", str(exc))
+            return
+
+        bdf_auto_save_settings = configuration.bdf_auto_save_settings
         if bdf_auto_save_settings is not None:
             try:
                 bdf_auto_save_settings.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1666,8 +1990,8 @@ class main_window(QMainWindow):
         self.start_measurement(
             panel,
             method,
-            method_label,
-            dialog.temperature_settings,
+            configuration.method_label,
+            configuration.temperature_settings,
             bdf_auto_save_settings,
         )
 

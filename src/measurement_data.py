@@ -86,6 +86,7 @@ class UnifiedDataset:
 def measurement_dataset_views(
     measurement,
     include_subscans: bool = False,
+    include_individual_measurements: bool = False,
     include_individual_eis: bool = True,
     include_unified_eis: bool = True,
 ) -> list[DatasetView]:
@@ -93,6 +94,7 @@ def measurement_dataset_views(
         return _logical_measurement_dataset_views(
             measurement,
             include_subscans=include_subscans,
+            include_individual_measurements=include_individual_measurements,
             include_individual_eis=include_individual_eis,
             include_unified_eis=include_unified_eis,
         )
@@ -207,6 +209,7 @@ def _logical_measurement_dataset_views(
     measurement: LogicalMeasurementRun,
     *,
     include_subscans: bool = False,
+    include_individual_measurements: bool = False,
     include_individual_eis: bool = True,
     include_unified_eis: bool = True,
 ) -> list[DatasetView]:
@@ -221,6 +224,21 @@ def _logical_measurement_dataset_views(
     normal_dataset = _unify_segment_datasets(f"{measurement.title} measurement", normal_sources)
     if _has_arrays(normal_dataset):
         views.append(DatasetView("measurement", measurement.title, normal_dataset, measurement))
+
+    if include_individual_measurements:
+        for segment, dataset in normal_sources:
+            title = _segment_title(segment)
+            individual_dataset = _unify_segment_datasets(title, [(segment, dataset)])
+            if _has_arrays(individual_dataset):
+                execution_index = segment.execution_index or segment.index
+                views.append(
+                    DatasetView(
+                        f"step_{execution_index}",
+                        title,
+                        individual_dataset,
+                        segment.source,
+                    )
+                )
 
     eis_sources = []
     individual_eis_sources = []
@@ -280,6 +298,12 @@ def _segment_eis_title(segment: MeasurementSegment, eis_index: int) -> str:
     step_type = segment.step_type or segment.label or "EIS"
     suffix = f" EIS {eis_index}" if eis_index > 1 else " EIS"
     return f"Step {step_id}: {step_type}{suffix}"
+
+
+def _segment_title(segment: MeasurementSegment) -> str:
+    execution_index = segment.execution_index or segment.index
+    step_type = (segment.step_type or segment.label or "step").replace("_", " ")
+    return f"{execution_index} · {step_type}"
 
 
 def _unify_segment_datasets(
