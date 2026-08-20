@@ -73,6 +73,10 @@ def _sanitize_filename_component(value: str) -> str:
     cleaned = "".join(character if character.isalnum() else "_" for character in value.strip())
     return cleaned.strip("_")
 
+def _abbreviate_filename_component(value: str) -> str:
+    cleaned = _sanitize_filename_component(value or "step")
+    short = "".join(part[0].upper() for part in cleaned.split("_") if part)
+    return short
 
 def _default_bdf_export_stem(cell_name: str, cas_id: str, sequence_number: int) -> str:
     sanitized_cell_name = _sanitize_filename_component(cell_name)
@@ -94,7 +98,7 @@ def _custom_bdf_export_stem(
         _sanitize_filename_component(str(measurement_number)) or "x",
     ]
     if include_step_type:
-        parts.append(_sanitize_filename_component(step_type or "step") or "step")
+        parts.append(_abbreviate_filename_component(step_type or "step") or "step")
     return "_".join(parts)
 
 
