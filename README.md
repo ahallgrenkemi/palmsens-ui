@@ -5,11 +5,11 @@ Small PySide6 desktop app for running PalmSens measurements, plotting live data,
 This project mainly builds upon three related works:
 
 - [PyPalmSens](https://github.com/PalmSens/PalmSens_SDK/releases)
-- [Aurora Method Builder](https://github.com/niklas-04/protocol-creator)
+- [Aurora Method Builder](https://github.com/Interphases-Lab/protocol-creator)
 - [Battery Data Format](https://github.com/battery-data-alliance/battery-data-format)
 - [Aurora Unicycler](https://github.com/EmpaEConversion/aurora-unicycler)
 
-The method builder is maintained in its own repository and installed automatically from the pinned Git revision in `pyproject.toml`. GitHub SSH access is required to install this private dependency.
+The method builder is maintained in its own repository and installed automatically from the pinned Git revision in `pyproject.toml`.
 
 Some of the functionality includes:
 
