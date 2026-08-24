@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from src.graph import graph_panel
@@ -197,11 +198,82 @@ class device_selection_dialog(QDialog):
         self.device_list.set_choice(devices)
         layout.addWidget(self.device_list)
 
+        layout.addWidget(QLabel("Channels"))
+        self.channel_button = QToolButton(self)
+        self.channel_button.setText("Select all")
+        self.channel_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.channel_menu = QMenu(self.channel_button)
+        self.channel_button.setMenu(self.channel_menu)
+        self.selected_device = None
+        self.selected_channels = []
+        self.channel_checkboxes = []
+        self.device_list.list_widget.currentRowChanged.connect(
+            lambda _row: self.update_channel_choices()
+        )
+        if devices:
+            self.device_list.list_widget.setCurrentRow(0)
+        layout.addWidget(self.channel_button)
+
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self.select_device)
         layout.addWidget(self.connect_button)
 
-        self.selected_device = None
+    def update_channel_choices(self):
+        self.channel_menu.clear()
+        self.channel_checkboxes = []
+        options_widget = QWidget(self.channel_menu)
+        options_layout = QVBoxLayout(options_widget)
+        options_layout.setContentsMargins(8, 6, 8, 6)
+        options_layout.setSpacing(4)
+
+        buttons_layout = QHBoxLayout()
+        select_all_button = QPushButton("Select all", options_widget)
+        clear_all_button = QPushButton("Clear all", options_widget)
+        buttons_layout.addWidget(select_all_button)
+        buttons_layout.addWidget(clear_all_button)
+        options_layout.addLayout(buttons_layout)
+
+        device = self.device_list.get_selected_choice()
+        if device is None:
+            self.channel_menu.addAction(self._channel_widget_action(options_widget))
+            return
+
+        for instrument in device.channels:
+            channel = getattr(instrument, "channel", -1)
+            label = f"Channel {channel}" if channel > 0 else instrument.name
+            checkbox = QCheckBox(label, options_widget)
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(self.update_channel_summary)
+            self.channel_checkboxes.append((checkbox, instrument))
+            options_layout.addWidget(checkbox)
+
+        select_all_button.clicked.connect(lambda: self.set_all_channels(True))
+        clear_all_button.clicked.connect(lambda: self.set_all_channels(False))
+        self.channel_menu.addAction(self._channel_widget_action(options_widget))
+        self.update_channel_summary()
+
+    def _channel_widget_action(self, widget):
+        widget_action = QWidgetAction(self.channel_menu)
+        widget_action.setDefaultWidget(widget)
+        return widget_action
+
+    def set_all_channels(self, checked):
+        for checkbox, _instrument in self.channel_checkboxes:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
+        self.update_channel_summary()
+
+    def update_channel_summary(self):
+        checked_count = sum(checkbox.isChecked() for checkbox, _ in self.channel_checkboxes)
+        total_count = len(self.channel_checkboxes)
+        if checked_count == total_count and total_count:
+            text = "Select all"
+        elif checked_count:
+            text = f"{checked_count} channel(s)"
+        else:
+            text = "Clear all"
+        self.channel_button.setText(text)
 
     def select_device(self):
         dev = self.device_list.get_selected_choice()
@@ -209,6 +281,14 @@ class device_selection_dialog(QDialog):
             return
 
         self.selected_device = dev
+        self.selected_channels = [
+            instrument
+            for checkbox, instrument in self.channel_checkboxes
+            if checkbox.isChecked()
+        ]
+        if not self.selected_channels:
+            QMessageBox.warning(self, "No channels selected", "Select at least one channel.")
+            return
         self.accept()
 
 
@@ -1386,6 +1466,9 @@ class main_window(QMainWindow):
         self.selected_panel: graph_panel | None = None
         self.channel_statuses: dict[graph_panel, channel_status_snapshot] = {}
         self.pending_device = None
+        self.pending_channels = None
+        self.connected_channels = []
+        self.connected_device = None
 
         self.setWindowTitle("Palmsens demo")
         self.resize(1200, 760)
@@ -1400,16 +1483,23 @@ class main_window(QMainWindow):
         toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(toolbar)
 
-        self.connect_action = QAction("Connect", self)
-        self.connect_action.setStatusTip("Scan for available devices")
+        self.connections_button = QToolButton(self)
+        self.connections_button.setText("Connections")
+        self.connections_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.connections_menu = QMenu(self.connections_button)
+        self.connect_action = QAction("Connect device", self)
         self.connect_action.triggered.connect(self.scan_devices)
-        toolbar.addAction(self.connect_action)
-
-        self.disconnect_action = QAction("Disconnect", self)
-        self.disconnect_action.setStatusTip("Disconnect from device")
+        self.connections_menu.addAction(self.connect_action)
+        self.disconnect_action = QAction("Disconnect device", self)
         self.disconnect_action.setEnabled(False)
         self.disconnect_action.triggered.connect(self.request_disconnect)
-        toolbar.addAction(self.disconnect_action)
+        self.connections_menu.addAction(self.disconnect_action)
+        self.change_channels_action = QAction("Change channels", self)
+        self.change_channels_action.setEnabled(False)
+        self.change_channels_action.triggered.connect(self.change_channels)
+        self.connections_menu.addAction(self.change_channels_action)
+        self.connections_button.setMenu(self.connections_menu)
+        toolbar.addWidget(self.connections_button)
 
         self.aurora_builder_action = QAction("Aurora Builder", self)
         self.aurora_builder_action.setStatusTip("Open the standalone Aurora method builder")
@@ -1510,12 +1600,14 @@ class main_window(QMainWindow):
             selected = dialog.selected_device
         if selected is not None:
             self.pending_device = selected
+            self.pending_channels = dialog.selected_channels
             self.connect_action.setEnabled(False)
             self.statusBar().showMessage(f"Connecting to {selected.name}...", 0)
             try:
-                self.connection_service.start(selected.channels)
+                self.connection_service.start(self.pending_channels)
             except Exception as exc:
                 self.pending_device = None
+                self.pending_channels = None
                 self.connect_action.setEnabled(True)
                 QMessageBox.critical(
                     self,
@@ -1554,21 +1646,67 @@ class main_window(QMainWindow):
             return
         self.device_state.clear_connected_device()
 
+    def change_channels(self):
+        if not self.device_state.is_connected or self.connected_device is None:
+            QMessageBox.information(self, "No device connected", "Connect a device first.")
+            return
+        if self.active_runs:
+            QMessageBox.warning(
+                self,
+                "Measurement running",
+                "Stop all measurements before changing channels.",
+            )
+            return
+
+        dialog = device_selection_dialog([self.connected_device], self)
+        if not dialog.exec():
+            return
+
+        selected_channels = dialog.selected_channels
+        if [id(channel) for channel in selected_channels] == [id(channel) for channel in self.connected_channels]:
+            return
+
+        if not self.connection_service.stop(wait=True):
+            QMessageBox.warning(self, "Channel change failed", "Could not stop the current connection.")
+            return
+
+        device = self.connected_device
+        self.device_state.clear_connected_device()
+        self.pending_device = device
+        self.pending_channels = selected_channels
+        self.connected_channels = []
+        self.connect_action.setEnabled(False)
+        self.statusBar().showMessage(f"Changing channels on {self.pending_device.name}...", 0)
+        try:
+            self.connection_service.start(selected_channels)
+        except Exception as exc:
+            self.pending_device = None
+            self.pending_channels = None
+            self.connect_action.setEnabled(True)
+            QMessageBox.critical(self, "Channel change failed", f"Could not reconnect the device:\n{exc}")
+            return
+
     def update_connection(self, is_connected: bool):
         self.disconnect_action.setEnabled(is_connected)
         self.connect_action.setEnabled(not is_connected)
+        self.change_channels_action.setEnabled(is_connected)
 
     def on_service_connected(self):
         device = self.pending_device
+        channels = self.pending_channels
         self.pending_device = None
+        self.pending_channels = None
         if device is None:
             self.connection_service.stop()
             return
+        self.connected_device = device
+        self.connected_channels = list(channels or device.channels)
         self.device_state.set_connected_device(device)
         self.statusBar().showMessage(f"Connected to {device.name}.", 5000)
 
     def on_service_connection_failed(self, error: str):
         self.pending_device = None
+        self.pending_channels = None
         self.connect_action.setEnabled(True)
         self.statusBar().showMessage("PalmSens connection failed.", 5000)
         QMessageBox.critical(
@@ -1578,7 +1716,10 @@ class main_window(QMainWindow):
         )
 
     def on_service_disconnected(self):
+        if self.pending_device is not None:
+            return
         self.pending_device = None
+        self.pending_channels = None
         self.connect_action.setEnabled(True)
         self.device_state.clear_connected_device()
 
@@ -1595,10 +1736,12 @@ class main_window(QMainWindow):
 
     def on_connect(self, dev):
         self.connection_indicator.set_status(True, dev)
-        for instrument in dev.channels:
+        for instrument in self.connected_channels:
             self.add_panel(self._panel_title(instrument), instrument=instrument)
 
     def on_disconnect(self):
+        self.connected_device = None
+        self.connected_channels = []
         self.clear_panel_selection()
         self.connection_indicator.set_status(False)
         self.clear_panels()
