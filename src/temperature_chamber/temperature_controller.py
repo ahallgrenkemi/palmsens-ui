@@ -1,10 +1,11 @@
 # Communicates  with the arduino firmware #
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import re
+import threading
 import time
 
 try:
@@ -51,10 +52,21 @@ class TemperatureProgress:
     message: str
 
 
+@dataclass
+class _SharedSerialConnection:
+    serial: object
+    users: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 class TemperatureController:
+    _connections: dict[tuple[str, int], _SharedSerialConnection] = {}
+    _connections_lock = threading.Lock()
+
     def __init__(self, settings: TemperatureSettings):
         self.settings = settings
-        self.serial = None
+        self._connection = None
+        self._connection_key = None
         self.started_at = None
         self.log_path = None
         self._log_handle = None
@@ -63,28 +75,48 @@ class TemperatureController:
         if serial is None:
             raise RuntimeError("pyserial is required for temperature chamber control.")
 
-        if self.serial is not None:
+        if self._connection is not None:
             return
 
         port = self.settings.port or self.find_arduino_port()
         if not port:
             raise RuntimeError("Could not find an Arduino serial port for the temperature chamber.")
 
-        self.serial = serial.Serial(
-            port,
-            self.settings.baud_rate,
-            timeout=_SERIAL_READ_TIMEOUT_S,
-        )
+        connection_key = (port.casefold(), self.settings.baud_rate)
+        with self._connections_lock:
+            connection = self._connections.get(connection_key)
+            if connection is None:
+                connection = _SharedSerialConnection(
+                    serial.Serial(
+                        port,
+                        self.settings.baud_rate,
+                        timeout=_SERIAL_READ_TIMEOUT_S,
+                    )
+                )
+                self._connections[connection_key] = connection
+            connection.users += 1
+            self._connection = connection
+            self._connection_key = connection_key
+
         self.started_at = time.monotonic()
         self._open_log()
-        time.sleep(2.0) # TODO: check sleep time
-        self.serial.reset_input_buffer()
+        if connection.users == 1:
+            time.sleep(2.0) # TODO: check sleep time
+            with connection.lock:
+                connection.serial.reset_input_buffer()
         self._log(f"Connected to {port} at {self.settings.baud_rate} baud")
 
     def close(self):
-        if self.serial is not None:
-            self.serial.close()
-            self.serial = None
+        connection = self._connection
+        if connection is not None:
+            with self._connections_lock:
+                connection.users -= 1
+                if connection.users == 0:
+                    with connection.lock:
+                        connection.serial.close()
+                    self._connections.pop(self._connection_key, None)
+            self._connection = None
+            self._connection_key = None
         if self._log_handle is not None:
             self._log_handle.close()
             self._log_handle = None
@@ -107,10 +139,12 @@ class TemperatureController:
         return self.read_status()
 
     def read_status(self) -> TemperatureStatus | None:
-        if self.serial is None:
+        connection = self._connection
+        if connection is None:
             raise RuntimeError("Temperature controller is not connected.")
 
-        raw = self.serial.readline()
+        with connection.lock:
+            raw = connection.serial.readline()
         if not raw:
             return None
 
@@ -122,9 +156,11 @@ class TemperatureController:
         return self._parse_status(line)
 
     def _write(self, command: str):
-        if self.serial is None:
+        connection = self._connection
+        if connection is None:
             raise RuntimeError("Temperature controller is not connected.")
-        self.serial.write(command.encode("ascii"))
+        with connection.lock:
+            connection.serial.write(command.encode("ascii"))
         self._log(f"Sent command: {command.strip()}")
 
     def _parse_status(self, line: str) -> TemperatureStatus | None:

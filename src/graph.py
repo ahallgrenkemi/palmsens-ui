@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QToolButton,
 )
-from PySide6.QtCore import Signal, Qt, QSize
+from PySide6.QtCore import QTimer, Signal, Qt, QSize
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
 import numpy as np
@@ -59,6 +59,8 @@ class _LiveMeasurement:
 class graph_widget(QWidget):
     dataset_views_changed = Signal()
 
+    LIVE_PLOT_INTERVAL_S = 60
+    EXPANDED_LIVE_PLOT_INTERVAL_S = 5
     HOVER_LABEL_OFFSET = 12
     HOVER_LABEL_MARGIN = 4
     HOVER_MARKER_SIZE = 10
@@ -86,11 +88,15 @@ class graph_widget(QWidget):
         self.live_run: LogicalMeasurementRun | None = None
         self.live_active_segment: MeasurementSegment | None = None
         self.live_current_view: DatasetView | None = None
+        self.live_plot_dirty = False
+        self.live_plot_expanded = False
         self.live_curve = None
         self.primary_curves = []
         self.right_view = None
         self.right_curve = None
         self.snap_hover_to_data = False
+        self.live_plot_timer = QTimer(self)
+        self.live_plot_timer.timeout.connect(self._update_live_plot)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -229,6 +235,7 @@ class graph_widget(QWidget):
 
     def plot_measurement(self, measurement, selection=None):
         self.measurement = measurement
+        self.live_plot_timer.stop()
         self._clear_live_state()
         self.dataset_views_changed.emit()
         if self.nyquist_mode and self.plot_nyquist():
@@ -239,6 +246,8 @@ class graph_widget(QWidget):
     def begin_live_measurement(self, event: LiveMeasurementStarted | None = None):
         event = event or LiveMeasurementStarted()
         self.measurement = None
+        self.live_plot_timer.setInterval(self._live_plot_interval_ms())
+        self.live_plot_timer.start()
         if event.segment is None:
             self._clear_live_state()
             self.dataset_view_id = None
@@ -250,7 +259,28 @@ class graph_widget(QWidget):
             self.live_active_segment = event.segment
             self.live_arrays = {}
             self.live_current_view = None
+            self.live_plot_dirty = False
             self._refresh_live_dataset_views()
+
+    def set_live_plot_expanded(self, expanded: bool):
+        self.live_plot_expanded = expanded
+        if self.live_plot_timer.isActive():
+            self.live_plot_timer.setInterval(self._live_plot_interval_ms())
+
+    def _live_plot_interval_ms(self):
+        interval_s = (
+            self.EXPANDED_LIVE_PLOT_INTERVAL_S
+            if self.live_plot_expanded
+            else self.LIVE_PLOT_INTERVAL_S
+        )
+        return interval_s * 1000
+
+    def _update_live_plot(self):
+        if not self.live_plot_dirty:
+            return
+        self.live_plot_dirty = False
+        self._refresh_live_dataset_views()
+        self._plot_selected_live_view()
 
     def complete_live_segment(self, segment: MeasurementSegment):
         if self.live_run is None:
@@ -259,6 +289,7 @@ class graph_widget(QWidget):
         self.live_run.add_segment(segment)
         self.live_active_segment = None
         self.live_current_view = None
+        self.live_plot_dirty = False
         self._refresh_live_dataset_views()
         self._plot_selected_live_view()
 
@@ -269,6 +300,7 @@ class graph_widget(QWidget):
         self.live_run = None
         self.live_active_segment = None
         self.live_current_view = None
+        self.live_plot_dirty = False
 
     def _plot_dataset_view(self, dataset_view, selection=None):
         arrays = dataset_arrays(dataset_view.dataset) if dataset_view is not None else []
@@ -640,9 +672,11 @@ class graph_widget(QWidget):
         if dataset_view is None:
             return
 
+        first_live_data = self.live_current_view is None
         self.live_current_view = dataset_view
-        self._refresh_live_dataset_views()
-        self._plot_selected_live_view()
+        self.live_plot_dirty = True
+        if first_live_data:
+            self._update_live_plot()
 
     def _plot_selected_live_view(self):
         if self.nyquist_mode and self.plot_nyquist():
@@ -736,9 +770,13 @@ class graph_widget(QWidget):
         y_array = np.asarray(y_array).ravel()
         if x_array.shape != y_array.shape:
             return
-        self._prepare_plot()
         self.plot_widget.setLabel("bottom", f"{x_label}")
         self.plot_widget.setLabel("left", f"{y_label}")
+        if self.live_curve is not None and len(self.primary_curves) == 1:
+            self.live_curve.setData(x_array, y_array, connect="finite")
+            return
+
+        self._prepare_plot()
         pen = pg.mkPen(color="#2f6f9f", width=2)
         self.live_curve = self.plot_widget.plot(
             x_array,
@@ -750,9 +788,15 @@ class graph_widget(QWidget):
         self._add_hover_marker()
 
     def _plot_labeled_series(self, series, x_label, y_label):
-        self._prepare_plot()
         self.plot_widget.setLabel("bottom", f"{x_label}")
         self.plot_widget.setLabel("left", f"{y_label}")
+
+        if len(series) == len(self.primary_curves) and self.primary_curves:
+            for curve, (x_values, y_values, _label) in zip(self.primary_curves, series):
+                curve.setData(x_values, y_values, connect="finite")
+            return
+
+        self._prepare_plot()
 
         for index, (x_values, y_values, label) in enumerate(series):
             color = self.EIS_SERIES_COLORS[index % len(self.EIS_SERIES_COLORS)]
@@ -1135,6 +1179,7 @@ class graph_panel(QFrame):
         self.expand_action.setText("Restore" if is_expanded else "Expand")
         self.expand_action.blockSignals(False)
         self.data_controls_widget.setVisible(is_expanded)
+        self.graph.set_live_plot_expanded(is_expanded)
         if is_expanded:
             self.refresh_data_controls()
 
