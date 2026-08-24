@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PalmSens UI"
+abstract: "PySide6 desktop application for running PalmSens electrochemical measurements, plotting live data, coordinating an Arduino temperature chamber, and exporting results in Battery Data Format."
+type: software
+version: 0.1.0
+date-released: "2026-08-08"
+license: MIT
+repository-code: "https://github.com/Interphases-Lab/palmsens-ui"
+keywords: ["electrochemistry", "batteries", "palmsens", "potentiostat", "operando", "laboratory-automation"]
+authors: [{given-names: "Niklas", family-names: "Sundin", affiliation: "Uppsala University"}, {given-names: "Erik J.", family-names: "Berg", orcid: "https://orcid.org/0000-0001-5653-0383", affiliation: "Uppsala University"}]
