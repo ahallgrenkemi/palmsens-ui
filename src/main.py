@@ -78,6 +78,8 @@ def _sanitize_filename_component(value: str) -> str:
 def _abbreviate_filename_component(value: str) -> str:
     cleaned = _sanitize_filename_component(value or "step")
     short = "".join(part[0].upper() for part in cleaned.split("_") if part)
+    if short == "IS":
+        return "EIS"
     return short
 
 def _default_bdf_export_stem(cell_name: str, cas_id: str, sequence_number: int) -> str:

@@ -72,6 +72,15 @@ class graph_widget(QWidget):
         "#dc2626",
         "#0891b2",
     )
+    STEP_TYPE_COLORS = {
+        "discharge": "#2f6f9f",
+        "charge": "#dc2626",
+        "ocv": "#059669",
+        "constant_voltage": "#7c3aed",
+        "temperature": "#059669",
+        "voltage_scan": "#d97706",
+        "voltage scan": "#d97706",
+    }
 
     def __init__(self):
         super().__init__()
@@ -82,6 +91,8 @@ class graph_widget(QWidget):
         self.right_y_index = None
         self.dataset_view_id = None
         self.nyquist_mode = False
+        self.align_axes = False
+        self.auto_range_enabled = True
         self.live_dataset_views = []
         self.live_arrays = {}
         self.live_axis_selection = None
@@ -90,11 +101,12 @@ class graph_widget(QWidget):
         self.live_current_view: DatasetView | None = None
         self.live_plot_dirty = False
         self.live_plot_expanded = False
+        self.legend_visible = False
         self.live_curve = None
         self.primary_curves = []
         self.right_view = None
         self.right_curve = None
-        self.snap_hover_to_data = False
+        self.snap_hover_to_data = True
         self.live_plot_timer = QTimer(self)
         self.live_plot_timer.timeout.connect(self._update_live_plot)
 
@@ -123,6 +135,16 @@ class graph_widget(QWidget):
         mouse_mode = pg.ViewBox.RectMode if enabled else pg.ViewBox.PanMode
         self.plot_item.vb.setMouseMode(mouse_mode)
 
+    def set_auto_range(self, enabled: bool):
+        self.auto_range_enabled = enabled
+        if enabled:
+            self.plot_item.vb.autoRange()
+            if self.right_view is not None and self.right_curve is not None:
+                self.right_view.autoRange()
+        self.plot_item.vb.enableAutoRange(enable=enabled)
+        if self.right_view is not None:
+            self.right_view.enableAutoRange(enable=enabled)
+
     def _setup_hover_coordinates(self):
         self.hover_marker = pg.ScatterPlotItem(
             size=self.HOVER_MARKER_SIZE,
@@ -147,16 +169,20 @@ class graph_widget(QWidget):
             self._hide_hover_coordinates()
             return
 
-        cursor_coordinates = self.plot_item.vb.mapSceneToView(scene_position)
-        coordinates = (cursor_coordinates.x(), cursor_coordinates.y())
         if self.snap_hover_to_data:
-            coordinates = self._nearest_visible_data_point(*coordinates)
-            if coordinates is None:
+            nearest = self._nearest_visible_data_point(scene_position)
+            if nearest is None:
                 self._hide_hover_coordinates()
                 return
-            self.hover_marker.setData([coordinates[0]], [coordinates[1]])
+            curve, x_value, y_value = nearest
+            self.hover_marker.setData([x_value], [y_value])
+            self._attach_hover_marker_to_curve(curve)
             self.hover_marker.show()
+            coordinates = (x_value, y_value)
         else:
+            self._attach_hover_marker_to_curve(self.primary_curves[0])
+            cursor_coordinates = self.plot_item.vb.mapSceneToView(scene_position)
+            coordinates = (cursor_coordinates.x(), cursor_coordinates.y())
             self.hover_marker.hide()
 
         x_value, y_value = coordinates
@@ -181,17 +207,25 @@ class graph_widget(QWidget):
         )
         self.hover_label.show()
 
-    def _nearest_visible_data_point(self, cursor_x, cursor_y):
-        x_range, y_range = self.plot_item.vb.viewRange()
-        x_span = abs(x_range[1] - x_range[0]) or 1
-        y_span = abs(y_range[1] - y_range[0]) or 1
-        plot_bounds = self.plot_item.vb.sceneBoundingRect()
-        nearest = None
+    def _nearest_visible_data_point(self, scene_position):
+        curves = list(self.primary_curves)
+        if self.right_curve is not None:
+            curves.append(self.right_curve)
 
-        for curve in self.primary_curves:
+        nearest = None
+        for curve in curves:
             x_data, y_data = curve.getData()
             if x_data is None or y_data is None:
                 continue
+
+            view_box = self.right_view if curve is self.right_curve and self.right_view is not None else self.plot_item.vb
+            view_range = view_box.viewRange()
+            x_range, y_range = view_range
+            x_span = abs(x_range[1] - x_range[0]) or 1
+            y_span = abs(y_range[1] - y_range[0]) or 1
+            plot_bounds = view_box.sceneBoundingRect()
+            cursor_coordinates = view_box.mapSceneToView(scene_position)
+            cursor_x, cursor_y = cursor_coordinates.x(), cursor_coordinates.y()
 
             x_data = np.asarray(x_data)
             y_data = np.asarray(y_data)
@@ -213,6 +247,7 @@ class graph_widget(QWidget):
             local_index = int(np.argmin(distances))
             candidate = (
                 float(distances[local_index]),
+                curve,
                 float(x_data[visible_indexes[local_index]]),
                 float(y_data[visible_indexes[local_index]]),
             )
@@ -221,9 +256,28 @@ class graph_widget(QWidget):
 
         return None if nearest is None else nearest[1:]
 
+    def _attach_hover_marker_to_curve(self, curve):
+        target_view = self.right_view if curve is self.right_curve and self.right_view is not None else self.plot_item
+        if target_view is self.plot_item:
+            if self.right_view is not None and self.hover_marker in self.right_view.addedItems:
+                self.right_view.removeItem(self.hover_marker)
+            self.plot_item.addItem(self.hover_marker, ignoreBounds=True)
+        elif self.right_view is not None:
+            self.plot_item.removeItem(self.hover_marker)
+            self.right_view.addItem(self.hover_marker, ignoreBounds=True)
+
     def set_snap_hover_to_data(self, enabled):
         self.snap_hover_to_data = enabled
         self._hide_hover_coordinates()
+
+    def set_align_axes(self, enabled: bool):
+        self.align_axes = enabled
+        if self.right_view is None:
+            return
+        if enabled:
+            self.right_view.setYLink(self.plot_item.vb)
+        else:
+            self.right_view.setYLink(None)
 
     def _hide_hover_coordinates(self):
         self.hover_label.hide()
@@ -355,6 +409,19 @@ class graph_widget(QWidget):
                           )
 
     @staticmethod
+    @staticmethod
+    def _abbreviate_step_name(value):
+        text = str(value or "step").strip()
+        cleaned = "".join(character if character.isalnum() else "_" for character in text)
+        parts = [part for part in cleaned.split("_") if part]
+        if not parts:
+            return "STEP"
+        abbreviated = "".join(part[0].upper() for part in parts)
+        if abbreviated == "IS":
+            return "EIS"
+        return abbreviated
+
+    @staticmethod
     def _split_step_series(arrays, x_index, y_index):
         metadata = {
             str(_get_name(array, "")): np.asarray(array.to_numpy()).ravel()
@@ -379,8 +446,12 @@ class graph_widget(QWidget):
                 end += 1
             finite = np.isfinite(x_values[start:end]) & np.isfinite(y_values[start:end])
             if finite.any():
+                step_type = next(
+                    (str(value) for value in metadata.get("step_type", ())[start:end] if graph_widget._has_value(value)),
+                    "",
+                )
                 label = graph_widget._step_series_label(metadata, start, end, len(series) + 1)
-                series.append((x_values[start:end][finite], y_values[start:end][finite], label))
+                series.append((x_values[start:end][finite], y_values[start:end][finite], label, step_type))
             start = end
         return series
 
@@ -400,7 +471,7 @@ class graph_widget(QWidget):
             execution_label = f"{float(execution_index):g}"
         except (TypeError, ValueError):
             execution_label = str(execution_index)
-        return f"{execution_label} · {step_type.replace('_', ' ')}"
+        return f"{execution_label} · {graph_widget._abbreviate_step_name(step_type)}"
 
     @staticmethod
     def _split_eis_series(arrays, x_index, y_index):
@@ -453,7 +524,7 @@ class graph_widget(QWidget):
             )
             details.append(f"Step {step_label}")
         if step_type:
-            details.append(step_type.replace("_", " "))
+            details.append(graph_widget._abbreviate_step_name(step_type))
         suffix = f" — {' · '.join(details)}" if details else ""
         return f"Spectrum {series_number}{suffix}"
 
@@ -535,7 +606,7 @@ class graph_widget(QWidget):
             for x_values, imaginary_values, label in view_series:
                 if view.id == "eis_live":
                     label = "Current · EIS"
-                series.append((x_values, -np.asarray(imaginary_values), label))
+                series.append((x_values, np.asarray(imaginary_values), label))
 
         if not series or primary_view is None or primary_indexes is None:
             return False
@@ -770,10 +841,14 @@ class graph_widget(QWidget):
         y_array = np.asarray(y_array).ravel()
         if x_array.shape != y_array.shape:
             return
+        if self.right_curve is not None or self.right_view is not None:
+            self._clear_right_axis()
         self.plot_widget.setLabel("bottom", f"{x_label}")
         self.plot_widget.setLabel("left", f"{y_label}")
         if self.live_curve is not None and len(self.primary_curves) == 1:
             self.live_curve.setData(x_array, y_array, connect="finite")
+            if not self.auto_range_enabled:
+                self.plot_item.vb.enableAutoRange(enable=False)
             return
 
         self._prepare_plot()
@@ -787,19 +862,49 @@ class graph_widget(QWidget):
         self.primary_curves = [self.live_curve]
         self._add_hover_marker()
 
+    @staticmethod
+    def _series_color_for(label, step_type=None, series_number=0):
+        label_text = str(label or "").casefold()
+        step_text = str(step_type or "").casefold().replace(" ", "_")
+        if "eis" in label_text or "spectrum" in label_text:
+            return graph_widget.EIS_SERIES_COLORS[series_number % len(graph_widget.EIS_SERIES_COLORS)]
+        for key, color in graph_widget.STEP_TYPE_COLORS.items():
+            normalized_key = key.casefold().replace(" ", "_")
+            if normalized_key == step_text or normalized_key in label_text:
+                return color
+        return "#2f6f9f"
+
+    def set_legend_visible(self, visible: bool):
+        self.legend_visible = visible
+        if visible:
+            self.legend.show()
+        else:
+            self.legend.hide()
+
+    def _apply_legend_visibility(self):
+        self.legend.show() if self.legend_visible else self.legend.hide()
+
     def _plot_labeled_series(self, series, x_label, y_label):
+        if self.right_curve is not None or self.right_view is not None:
+            self._clear_right_axis()
         self.plot_widget.setLabel("bottom", f"{x_label}")
         self.plot_widget.setLabel("left", f"{y_label}")
 
         if len(series) == len(self.primary_curves) and self.primary_curves:
-            for curve, (x_values, y_values, _label) in zip(self.primary_curves, series):
+            for curve, item in zip(self.primary_curves, series):
+                x_values, y_values, _label, *_rest = item
                 curve.setData(x_values, y_values, connect="finite")
+            if not self.auto_range_enabled:
+                self.plot_item.vb.enableAutoRange(enable=False)
+            self._apply_legend_visibility()
             return
 
         self._prepare_plot()
 
-        for index, (x_values, y_values, label) in enumerate(series):
-            color = self.EIS_SERIES_COLORS[index % len(self.EIS_SERIES_COLORS)]
+        for index, item in enumerate(series):
+            x_values, y_values, label, *rest = item
+            step_type = rest[0] if rest else None
+            color = self._series_color_for(label, step_type=step_type, series_number=index)
             curve = self.plot_item.plot(
                 x_values,
                 y_values,
@@ -810,7 +915,7 @@ class graph_widget(QWidget):
             self.primary_curves.append(curve)
 
         self.live_curve = self.primary_curves[0] if self.primary_curves else None
-        self.legend.show()
+        self._apply_legend_visibility()
         self._add_hover_marker()
 
     def _prepare_plot(self):
@@ -818,7 +923,7 @@ class graph_widget(QWidget):
         self.plot_widget.clear()
         self._clear_right_axis()
         self.legend.clear()
-        self.legend.hide()
+        self._apply_legend_visibility()
         self.live_curve = None
         self.primary_curves = []
 
@@ -867,7 +972,10 @@ class graph_widget(QWidget):
         self.plot_item.showAxis("right")
         self.plot_item.setLabel("bottom", f"{x_label}")
         self.plot_item.setLabel("left", f"{left_label}", color="#2f6f9f")
-        self.plot_item.setLabel("right", f"{right_label}", color="#7c3aed")
+        self.plot_item.setLabel("right", f"{right_label}", color="#d833a1")
+
+        if self.align_axes:
+            self.right_view.setYLink(self.plot_item.vb)
 
         self.live_curve = self.plot_item.plot(
             left_x,
@@ -879,12 +987,16 @@ class graph_widget(QWidget):
         self.right_curve = pg.PlotDataItem(
             right_x,
             right_y,
-            pen=pg.mkPen(color="#7c3aed", width=2),
+            pen=pg.mkPen(color="#d833a1", width=2),
             connect="finite",
         )
         self.right_view.addItem(self.right_curve)
         self._update_right_axis()
-        self.right_view.autoRange()
+        if self.auto_range_enabled:
+            self.right_view.autoRange()
+        else:
+            self.plot_item.vb.enableAutoRange(enable=False)
+            self.right_view.enableAutoRange(enable=False)
         self._add_hover_marker()
 
     def _setup_right_axis(self):
@@ -893,6 +1005,8 @@ class graph_widget(QWidget):
         self.plot_item.scene().addItem(self.right_view)
         self.plot_item.getAxis("right").linkToView(self.right_view)
         self.right_view.setXLink(self.plot_item.vb)
+        if self.align_axes:
+            self.right_view.setYLink(self.plot_item.vb)
         self.plot_item.getAxis("right").setPen("#7b8794")
         self.plot_item.getAxis("right").setTextPen("#56616f")
         self.plot_item.vb.sigResized.connect(self._update_right_axis)
@@ -900,6 +1014,7 @@ class graph_widget(QWidget):
 
     def _clear_right_axis(self):
         if self.right_view is not None:
+            self.right_view.setYLink(None)
             self.right_view.clear()
         self.right_curve = None
         self.plot_item.hideAxis("right")
@@ -1086,12 +1201,25 @@ class graph_panel(QFrame):
         self.axes_action = QAction("Edit Axes", self)
         self.highlight_points_action = QAction("Highlight Points", self)
         self.highlight_points_action.setCheckable(True)
+        self.highlight_points_action.setChecked(True)
         self.highlight_points_action.setToolTip(
             "Snap hover values to the nearest visible point on the primary curve"
         )
 
+        self.align_axes_action = QAction("Align Axes", self)
+        self.align_axes_action.setCheckable(True)
+        self.align_axes_action.setToolTip(
+            "Keep the secondary Y axis locked to the primary Y axis when panning or zooming"
+        )
+        self.auto_range_action = QAction("Auto Range", self)
+        self.auto_range_action.setCheckable(True)
+        self.auto_range_action.setChecked(True)
+        self.auto_range_action.setToolTip("Automatically adjust the plot range when data changes")
+
         self.view_menu = QMenu(self)
         self.view_menu.addAction(self.zoom_area_action)
+        self.view_menu.addAction(self.align_axes_action)
+        self.view_menu.addAction(self.auto_range_action)
         self.view_menu.addAction(self.highlight_points_action)
         self.view_action = QAction("View", self)
         self.view_action.setMenu(self.view_menu)
@@ -1133,6 +1261,8 @@ class graph_panel(QFrame):
         self.expand_action.toggled.connect(self.expand_requested.emit)
         self.zoom_area_action.toggled.connect(self.graph.set_rectangle_zoom_enabled)
         self.axes_action.triggered.connect(self.edit_axes)
+        self.align_axes_action.toggled.connect(self.graph.set_align_axes)
+        self.auto_range_action.toggled.connect(self.graph.set_auto_range)
         self.highlight_points_action.toggled.connect(self.graph.set_snap_hover_to_data)
         self.step_view_combo.currentIndexChanged.connect(self.change_step_view)
         self.nyquist_button.toggled.connect(self.set_nyquist_view)
@@ -1180,6 +1310,7 @@ class graph_panel(QFrame):
         self.expand_action.blockSignals(False)
         self.data_controls_widget.setVisible(is_expanded)
         self.graph.set_live_plot_expanded(is_expanded)
+        self.graph.set_legend_visible(is_expanded)
         if is_expanded:
             self.refresh_data_controls()
 

@@ -183,16 +183,24 @@ def _normalize_text(value) -> str:
 
 
 _BDF_TERMS = (
+    _term("step_time_second", "Step Time / s", ("step_time_s", "step_time", "steptime", "step_elapsed_time"), _TIME_FACTORS),
+    _term("test_time_second", "Test Time / s", ("test_time_s", "test_time", "testtime", "elapsed_time", "elapsedtime", "time"), _TIME_FACTORS, required=True),
+    _term("current_ampere", "Current / A", ("current_a", "current", "i"), _CURRENT_FACTORS, required=True),
+    _term("voltage_volt", "Voltage / V", ("voltage_v", "voltage", "potential", "e", "v"), _VOLTAGE_FACTORS, required=True),
+    _term("voltage_wevsce_volt", "Voltage Full Cell / V", ("full_cell_voltage", "full_cell", "potentialwevsce"), _VOLTAGE_FACTORS),
+    _term("frequency_hertz", "Frequency / Hz", ("frequency", "freq", "f"), _FREQUENCY_FACTORS),
+    _term("imaginary_impedance_ohm", "Imaginary Impedance / ohm", ("z_imag", "zimag", "z_im", "zim", "z''", "z``"), _RESISTANCE_FACTORS),
+    _term("real_impedance_ohm", "Real Impedance / ohm", ("z_real", "zreal", "z_re", "zre", "z'", "z`"), _RESISTANCE_FACTORS),
+    _term("ambient_temperature_celsius", "Ambient Temperature / degC", ("ambient_temperature_degc", "chamber_temperature", "environment_temperature"), _TEMPERATURE_FACTORS),
+    _term("internal_resistance_ohm", "Internal Resistance / ohm", ("internal_resistance", "resistance", "r_int"), _RESISTANCE_FACTORS),
     _term("ac_internal_resistance_ohm", "AC Internal Resistance / ohm", ("ac_resistance_ohm", "acr"), _RESISTANCE_FACTORS),
     _term("absolute_impedance_ohm", "Absolute Impedance / ohm", ("impedance", "impedance_modulus", "z", "z_abs", "abs_z"), _RESISTANCE_FACTORS),
     _term("ambient_pressure_pa", "Ambient Pressure / Pa", ("ambient_pressure_pascal", "ambient_pressure", "ambient_air_pressure"), _PRESSURE_FACTORS),
-    _term("ambient_temperature_celsius", "Ambient Temperature / degC", ("ambient_temperature_degc", "chamber_temperature", "environment_temperature"), _TEMPERATURE_FACTORS),
     _term("applied_pressure_pa", "Applied Pressure / Pa", ("applied_pressure_pascal", "applied_pressure"), _PRESSURE_FACTORS),
     _term("charging_capacity_ah", "Charging Capacity / Ah", ("charging_capacity_ampere_hour", "charge_capacity_ah"), _CAPACITY_FACTORS),
     _term("charging_energy_wh", "Charging Energy / Wh", ("charging_energy_watt_hour", "charge_energy_wh"), _ENERGY_FACTORS),
     _term("cumulative_capacity_ah", "Cumulative Capacity / Ah", ("cumulative_capacity_ampere_hour", "total_capacity_ah", "throughput_capacity_ah"), _CAPACITY_FACTORS),
     _term("cumulative_energy_wh", "Cumulative Energy / Wh", ("cumulative_energy_watt_hour", "total_energy_wh", "throughput_energy_wh"), _ENERGY_FACTORS),
-    _term("current_ampere", "Current / A", ("current_a", "current", "i"), _CURRENT_FACTORS, required=True),
     _term("cycle_charging_capacity_ah", "Cycle Charging Capacity / Ah", ("cycle_charge_capacity_ah", "cycle_charging_capacity_ampere_hour"), _CAPACITY_FACTORS),
     _term("cycle_charging_energy_wh", "Cycle Charging Energy / Wh", ("cycle_charge_energy_wh", "cycle_charging_energy_watt_hour"), _ENERGY_FACTORS),
     _term("cycle_count", "Cycle Count / 1", ("cycle_count_1", "cycle_dimensionless", "cycle_number", "cycle"), _COUNT_FACTORS),
@@ -205,14 +213,10 @@ _BDF_TERMS = (
     _term("dc_internal_resistance_ohm", "DC Internal Resistance / ohm", ("dc_resistance_ohm", "dcir", "dcir_ohm"), _RESISTANCE_FACTORS),
     _term("discharging_capacity_ah", "Discharging Capacity / Ah", ("discharging_capacity_ampere_hour", "discharge_capacity_ah"), _CAPACITY_FACTORS),
     _term("discharging_energy_wh", "Discharging Energy / Wh", ("discharging_energy_watt_hour", "discharge_energy_wh"), _ENERGY_FACTORS),
-    _term("frequency_hertz", "Frequency / Hz", ("frequency", "freq", "f"), _FREQUENCY_FACTORS),
-    _term("imaginary_impedance_ohm", "Imaginary Impedance / ohm", ("z_imag", "zimag", "z_im", "zim", "z''", "z``"), _RESISTANCE_FACTORS),
-    _term("internal_resistance_ohm", "Internal Resistance / ohm", ("internal_resistance", "resistance", "r_int"), _RESISTANCE_FACTORS),
     _term("net_capacity_ah", "Net Capacity / Ah", ("net_capacity_ampere_hour", "q_q0"), _CAPACITY_FACTORS),
     _term("net_energy_wh", "Net Energy / Wh", ("net_energy_watt_hour",), _ENERGY_FACTORS),
     _term("phase_degree", "Phase / deg", ("phase", "phase_angle", "phase_deg"), _ANGLE_FACTORS),
     _term("power_watt", "Power / W", ("power_w", "power", "p"), _POWER_FACTORS),
-    _term("real_impedance_ohm", "Real Impedance / ohm", ("z_real", "zreal", "z_re", "zre", "z'", "z`"), _RESISTANCE_FACTORS),
     _term("record_index", "Record Index / 1", ("record", "record_number", "data_point", "data_point_index"), _COUNT_FACTORS),
     _term("step_charging_capacity_ah", "Step Charging Capacity / Ah", ("step_charge_capacity_ah", "step_charging_capacity_ampere_hour", "q_charge"), _CAPACITY_FACTORS),
     _term("step_charging_energy_wh", "Step Charging Energy / Wh", ("step_charge_energy_wh", "step_charging_energy_watt_hour"), _ENERGY_FACTORS),
@@ -225,7 +229,6 @@ _BDF_TERMS = (
     _term("step_index", "Step Index / 1", ("step_index_1", "within_step_index"), _COUNT_FACTORS),
     _term("step_net_capacity_ah", "Step Net Capacity / Ah", ("step_net_capacity_ampere_hour",), _CAPACITY_FACTORS),
     _term("step_net_energy_wh", "Step Net Energy / Wh", ("step_net_energy_watt_hour",), _ENERGY_FACTORS),
-    _term("step_time_second", "Step Time / s", ("step_time_s", "step_time", "steptime", "step_elapsed_time"), _TIME_FACTORS),
     _term("step_type", "Step Type", ("mode", "operation_mode"), None, "string"),
     _term("surface_pressure_pa", "Surface Pressure / Pa", ("surface_pressure_pascal", "surface_pressure", "skin_pressure"), _PRESSURE_FACTORS),
     _term("surface_temperature_celsius", "Surface Temperature / degC", ("surface_temperature_degc", "surface_temperature", "skin_temperature"), _TEMPERATURE_FACTORS),
@@ -234,10 +237,7 @@ _BDF_TERMS = (
     _term("temperature_t3_celsius", "Temperature T3 / degC", ("surface_temperature_t3_celsius", "temperature_t3_degc", "temperature_t3", "t3"), _TEMPERATURE_FACTORS),
     _term("temperature_t4_celsius", "Temperature T4 / degC", ("surface_temperature_t4_celsius", "temperature_t4_degc", "temperature_t4", "t4"), _TEMPERATURE_FACTORS),
     _term("temperature_t5_celsius", "Temperature T5 / degC", ("surface_temperature_t5_celsius", "temperature_t5_degc", "temperature_t5", "t5"), _TEMPERATURE_FACTORS),
-    _term("test_time_second", "Test Time / s", ("test_time_s", "test_time", "testtime", "elapsed_time", "elapsedtime", "time"), _TIME_FACTORS, required=True),
     _term("unix_time_second", "Unix Time / s", ("unix_time_s", "unix_time", "timestamp", "epoch_time"), _TIME_FACTORS),
-    _term("voltage_volt", "Voltage / V", ("voltage_v", "voltage", "potential", "e", "v"), _VOLTAGE_FACTORS, required=True),
-    _term("voltage_wevsce_volt", "Voltage Full Cell / V", ("full_cell_voltage", "full_cell", "potentialwevsce"), _VOLTAGE_FACTORS),
 )
 
 _BDF_TERMS_BY_KEY = {term.key: term for term in _BDF_TERMS}
@@ -263,6 +263,19 @@ _CYCLE_DERIVED_KEYS = {
     "cycle_discharging_energy_wh",
     "cycle_cumulative_energy_wh",
     "cycle_net_energy_wh",
+}
+_EIS_EXCLUDED_BDF_KEYS = {
+    "power_watt",
+    "charging_capacity_ah",
+    "charging_energy_wh",
+    "cumulative_capacity_ah",
+    "cumulative_energy_wh",
+    "discharging_capacity_ah",
+    "discharging_energy_wh",
+    "net_capacity_ah",
+    "net_energy_wh",
+    * _STEP_DERIVED_KEYS,
+    * _CYCLE_DERIVED_KEYS,
 }
 _BDF_ALIAS_TO_KEY: dict[str, str] = {}
 for _term_definition in _BDF_TERMS:
@@ -370,6 +383,11 @@ def _data_array_key(data_array, index: int) -> str:
 def _extract_bdf_series(group, optional_quantity_keys: set[str] | None = None) -> dict[str, list]:
     series = {}
     raw_dependency_keys = _raw_dependency_keys(optional_quantity_keys)
+    is_eis = _is_eis_group(group)
+    if is_eis and optional_quantity_keys is not None:
+        optional_quantity_keys = set(optional_quantity_keys) - _EIS_EXCLUDED_BDF_KEYS
+    elif is_eis:
+        optional_quantity_keys = set()
 
     for entry in group["arrays"]:
         data_array = entry["array"]
@@ -435,6 +453,25 @@ def _is_open_circuit_group(group) -> bool:
             return True
 
     return False
+
+
+def _is_eis_group(group) -> bool:
+    detected_keys = {
+        _detect_bdf_column(
+            entry["base_key"],
+            getattr(entry["array"], "name", entry["base_key"]),
+            getattr(entry["array"], "type", ""),
+            getattr(entry["array"], "quantity", ""),
+            getattr(entry["array"], "unit", ""),
+        )
+        for entry in group["arrays"]
+    }
+    return "frequency_hertz" in detected_keys and (
+        "real_impedance_ohm" in detected_keys
+        or "imaginary_impedance_ohm" in detected_keys
+        or "absolute_impedance_ohm" in detected_keys
+        or "phase_degree" in detected_keys
+    )
 
 
 def _is_open_circuit_step_type(value) -> bool:
