@@ -130,8 +130,6 @@ class MeasurementEditorState:
     aurora_capacity: str
     aurora_device_key: str
     aurora_scan_step: str
-    aurora_eis_dc_potential: str
-    aurora_eis_dc_current: str
     additional_measurements: tuple[str, ...]
     auto_bdf_enabled: bool
     auto_bdf_output_dir: str
@@ -707,20 +705,6 @@ class method_configuration_dialog(QDialog):
             "voltage-scan step",
         )
 
-        self.aurora_eis_dc_potential_edit = QLineEdit("0.0", self.package_widget)
-        add_package_run_field(
-            "EIS DC potential (V)",
-            self.aurora_eis_dc_potential_edit,
-            "DC potential offset, in volts, applied during potentiostatic EIS steps.",
-        )
-
-        self.aurora_eis_dc_current_edit = QLineEdit("0.0", self.package_widget)
-        add_package_run_field(
-            "EIS DC current (mA)",
-            self.aurora_eis_dc_current_edit,
-            "DC current offset, in mA, applied during galvanostatic EIS steps.",
-        )
-
         extra_measurements_label = QLabel("Extra measurements", self.package_widget)
         extra_measurements_label.setObjectName("auroraCardTitle")
         package_layout.addWidget(extra_measurements_label)
@@ -980,8 +964,6 @@ class method_configuration_dialog(QDialog):
             aurora_capacity=self.aurora_capacity_edit.text(),
             aurora_device_key=str(self.aurora_device_combo.currentData() or ""),
             aurora_scan_step=self.aurora_scan_step_edit.text(),
-            aurora_eis_dc_potential=self.aurora_eis_dc_potential_edit.text(),
-            aurora_eis_dc_current=self.aurora_eis_dc_current_edit.text(),
             additional_measurements=self.selected_additional_measurements(),
             auto_bdf_enabled=self.aurora_auto_bdf_checkbox.isChecked(),
             auto_bdf_output_dir=self.aurora_auto_bdf_dir_edit.text(),
@@ -1015,8 +997,6 @@ class method_configuration_dialog(QDialog):
         self.aurora_capacity_edit.setText(state.aurora_capacity)
         self._set_combo_value(self.aurora_device_combo, state.aurora_device_key)
         self.aurora_scan_step_edit.setText(state.aurora_scan_step)
-        self.aurora_eis_dc_potential_edit.setText(state.aurora_eis_dc_potential)
-        self.aurora_eis_dc_current_edit.setText(state.aurora_eis_dc_current)
         selected_measurements = set(state.additional_measurements)
         for var_type, checkbox in self.additional_measurement_checks.items():
             checkbox.setChecked(checkbox.isEnabled() and var_type in selected_measurements)
@@ -1161,14 +1141,6 @@ class method_configuration_dialog(QDialog):
             scan_step_voltage_v=self.parse_optional_float(
                 self.aurora_scan_step_edit,
                 "Scan step voltage (V)",
-            ),
-            eis_dc_potential_v=self.parse_float(
-                self.aurora_eis_dc_potential_edit,
-                "EIS DC potential (V)",
-            ),
-            eis_dc_current_ma=self.parse_float(
-                self.aurora_eis_dc_current_edit,
-                "EIS DC current (mA)",
             ),
             additional_measurements=self.selected_additional_measurements(),
         )
