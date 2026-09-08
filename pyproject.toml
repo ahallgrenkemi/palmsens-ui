@@ -14,7 +14,7 @@ dependencies = [
 	"pyqtgraph",
 	"pandas",
 	"batterydf",
-	"aurora-method-builder @ git+https://github.com/ahallgrenkemi/protocol-creator.git",
+	"aurora-method-builder @ git+https://github.com/ahallgrenkemi/protocol-creator.git@8f358789cef56f97dc13d2284d428817e16be8c1",
 	"pyserial"
 ]
 
