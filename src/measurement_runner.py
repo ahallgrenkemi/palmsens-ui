@@ -23,14 +23,50 @@ _DEFAULT_TEMPERATURE_OCV_INTERVAL_S = 1.0
 _TARGET_REACHED_OCV_LIMIT_S = 24 * 60 * 60
 
 
+class TemperatureStepCoordinator:
+    """Release synchronized temperature steps when every active channel arrives."""
+
+    def __init__(self, instrument_ids: set[int]):
+        self.instrument_ids = instrument_ids
+        self.arrivals: dict[int, set[int]] = {}
+        self.events: dict[int, asyncio.Event] = {}
+        self.withdrawn: set[int] = set()
+
+    async def wait_for_all(self, execution_index: int, instrument_id: int) -> None:
+        if instrument_id not in self.instrument_ids:
+            return
+
+        event = self.events.setdefault(execution_index, asyncio.Event())
+        arrivals = self.arrivals.setdefault(execution_index, set())
+        arrivals.add(instrument_id)
+        if arrivals >= self.instrument_ids - self.withdrawn:
+            event.set()
+        await event.wait()
+
+    def withdraw(self, instrument_id: int) -> None:
+        self.withdrawn.add(instrument_id)
+        for execution_index, arrivals in self.arrivals.items():
+            if arrivals >= self.instrument_ids - self.withdrawn:
+                self.events[execution_index].set()
+
+
 class measurement_runner(QObject):
     progress = Signal(object)
 
-    def __init__(self, instrument, method, temperature_settings=None):
+    def __init__(
+        self,
+        instrument,
+        method,
+        temperature_settings=None,
+        temperature_coordinator=None,
+        synchronize_temperature_steps=False,
+    ):
         super().__init__()
         self.instrument = instrument
         self.method = method
         self.temperature_settings = temperature_settings
+        self.temperature_coordinator = temperature_coordinator
+        self.synchronize_temperature_steps = synchronize_temperature_steps
         self.manager = None
         self.loop = None
         self.abort_requested = False
@@ -104,7 +140,13 @@ class measurement_runner(QObject):
                     break
 
                 if action.is_temperature:
-                    method = self._temperature_ocv_method(stepwise_method, action)
+                    method = self._temperature_ocv_method(
+                        stepwise_method,
+                        action,
+                        sync_channels=(
+                            self.synchronize_temperature_steps
+                        ),
+                    )
                 elif action.is_palmsens and action.methodscript is not None:
                     method = ps.MethodScript(script=action.methodscript)
                 else:
@@ -263,7 +305,7 @@ class measurement_runner(QObject):
                     return
 
     @staticmethod
-    def _temperature_ocv_method(stepwise_method, action):
+    def _temperature_ocv_method(stepwise_method, action, sync_channels=False):
         record = stepwise_method.protocol_json.get("record", {})
         try:
             interval_s = float(
@@ -276,7 +318,9 @@ class measurement_runner(QObject):
 
         wait_s = max(float(action.wait_after_s or 0.0), interval_s)
         run_time_s = (
-            wait_s
+            _TARGET_REACHED_OCV_LIMIT_S
+            if sync_channels
+            else wait_s
             if action.wait_starts_immediately
             else _TARGET_REACHED_OCV_LIMIT_S
         )
@@ -301,6 +345,22 @@ class measurement_runner(QObject):
             raise RuntimeError("Temperature step is missing a target temperature.")
 
         wait_s = action.wait_after_s or 0.0
+        synchronized = (
+            self.temperature_settings is not None
+            and self.synchronize_temperature_steps
+            and self.temperature_coordinator is not None
+        )
+
+        if synchronized:
+            return await self._execute_synchronized_temperature_action(
+                manager,
+                method,
+                callback,
+                temperature_controller,
+                action,
+                wait_s,
+            )
+
         self.progress.emit(
             TemperatureProgress(
                 target_c=target_c,
@@ -392,6 +452,117 @@ class measurement_runner(QObject):
         )
         return measurement, samples
 
+    async def _execute_synchronized_temperature_action(
+        self,
+        manager,
+        method,
+        callback,
+        temperature_controller,
+        action,
+        wait_s,
+    ):
+        target_c = action.target_temperature_c
+        self.progress.emit(
+            TemperatureProgress(
+                target_c=target_c,
+                temperature_c=None,
+                setpoint_c=None,
+                wait_elapsed_s=0.0,
+                message=f"Waiting for channels before setting {target_c:.2f} C",
+            )
+        )
+
+        wait_started_at = None
+        latest_status = None
+        temperature_step_complete = False
+
+        def handle_status(status):
+            nonlocal latest_status, wait_started_at, temperature_step_complete
+            latest_status = status
+            now = time.monotonic()
+            if not action.wait_starts_immediately:
+                error_c = abs(status.temperature_c - target_c)
+                if error_c <= temperature_controller.settings.tolerance_c:
+                    wait_started_at = wait_started_at or now
+                else:
+                    wait_started_at = None
+            wait_elapsed_s = (
+                now - wait_started_at if wait_started_at is not None else 0.0
+            )
+            temperature_step_complete = (
+                wait_started_at is not None and wait_elapsed_s >= wait_s
+            )
+            self.progress.emit(
+                TemperatureProgress(
+                    target_c=target_c,
+                    temperature_c=status.temperature_c,
+                    setpoint_c=status.setpoint_c,
+                    wait_elapsed_s=wait_elapsed_s,
+                    message=temperature_controller.progress_message(
+                        status,
+                        target_c,
+                        wait_elapsed_s,
+                        wait_s,
+                        action.wait_starts_immediately,
+                    ),
+                )
+            )
+
+        measurement_task = asyncio.create_task(
+            self._measure_palmsens(
+                manager,
+                method,
+                callback,
+                temperature_controller,
+                temperature_status_callback=handle_status,
+                stop_when_temperature_status=lambda _status: temperature_step_complete,
+            )
+        )
+        await self.temperature_coordinator.wait_for_all(
+            action.execution_index,
+            id(self.instrument),
+        )
+
+        if self._abort_requested():
+            await measurement_task
+            raise RuntimeError("Temperature step aborted while waiting for other channels.")
+
+        self.progress.emit(
+            TemperatureProgress(
+                target_c=target_c,
+                temperature_c=None,
+                setpoint_c=None,
+                wait_elapsed_s=0.0,
+                message=f"Setting chamber to {target_c:.2f} C",
+            )
+        )
+        if action.ramp_rate_c_per_min is not None:
+            temperature_controller.set_ramp_rate(action.ramp_rate_c_per_min)
+        temperature_controller.start()
+        temperature_controller.set_target(target_c)
+        if action.wait_starts_immediately:
+            wait_started_at = time.monotonic()
+
+        measurement, samples = await measurement_task
+        if not action.wait_starts_immediately and not temperature_step_complete:
+            raise RuntimeError(
+                "Temperature did not stabilize before the 24-hour OCV safety limit."
+            )
+
+        temperature_c = latest_status.temperature_c if latest_status is not None else None
+        setpoint_c = latest_status.setpoint_c if latest_status is not None else None
+        suffix = f" at {temperature_c:.2f} C" if temperature_c is not None else ""
+        self.progress.emit(
+            TemperatureProgress(
+                target_c=target_c,
+                temperature_c=temperature_c,
+                setpoint_c=setpoint_c,
+                wait_elapsed_s=wait_s,
+                message=f"Temperature step completed{suffix}",
+            )
+        )
+        return measurement, samples
+
     def abort(self):
         with self._state_lock:
             self.abort_requested = True
@@ -400,6 +571,11 @@ class measurement_runner(QObject):
 
         if manager is not None and loop is not None:
             asyncio.run_coroutine_threadsafe(manager.abort(), loop)
+            if self.temperature_coordinator is not None:
+                loop.call_soon_threadsafe(
+                    self.temperature_coordinator.withdraw,
+                    id(self.instrument),
+                )
 
     def _abort_requested(self) -> bool:
         with self._state_lock:

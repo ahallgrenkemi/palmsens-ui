@@ -143,6 +143,7 @@ class MeasurementEditorState:
     temperature_tolerance: str
     temperature_log_dir: str
     temperature_stop_on_abort: bool
+    temperature_sync_channels: bool
 
 
 @dataclass(frozen=True)
@@ -838,6 +839,13 @@ class method_configuration_dialog(QDialog):
         )
         package_layout.addWidget(self.temperature_enabled_checkbox)
 
+        self.temperature_syncing = QCheckBox("Sync channels before temperature steps", self.package_widget)
+        self.temperature_syncing.setToolTip(
+            "Wait for all channels to finish their current measurement step before changing the temperature. "
+            "Only use when all channels are running the same protocol."
+        )
+        package_layout.addWidget(self.temperature_syncing)
+
         self.temperature_form = QFormLayout()
         self.temperature_form.setContentsMargins(0, 0, 0, 0)
         self.temperature_form.setHorizontalSpacing(12)
@@ -871,7 +879,7 @@ class method_configuration_dialog(QDialog):
         )
 
         self.temperature_stop_on_abort_checkbox = QCheckBox("Stop chamber on abort", self.package_widget)
-        self.temperature_stop_on_abort_checkbox.setChecked(True)
+        self.temperature_stop_on_abort_checkbox.setChecked(False)
         self.temperature_stop_on_abort_checkbox.setToolTip(
             "Send a stop command to the temperature chamber when the measurement is "
             "aborted. If unchecked, the chamber connection closes without stopping it."
@@ -977,6 +985,7 @@ class method_configuration_dialog(QDialog):
             temperature_tolerance=self.temperature_tolerance_edit.text(),
             temperature_log_dir=self.temperature_log_dir_edit.text(),
             temperature_stop_on_abort=self.temperature_stop_on_abort_checkbox.isChecked(),
+            temperature_sync_channels=self.temperature_syncing.isChecked(),
         )
 
     def apply_editor_state(self, state: MeasurementEditorState):
@@ -1013,6 +1022,7 @@ class method_configuration_dialog(QDialog):
         self.temperature_tolerance_edit.setText(state.temperature_tolerance)
         self.temperature_log_dir_edit.setText(state.temperature_log_dir)
         self.temperature_stop_on_abort_checkbox.setChecked(state.temperature_stop_on_abort)
+        self.temperature_syncing.setChecked(state.temperature_sync_channels)
         self.rebuild_mode()
         self.update_additional_measurements()
         self.update_temperature_fields()
@@ -1052,6 +1062,7 @@ class method_configuration_dialog(QDialog):
             self.temperature_tolerance_edit,
             self.temperature_log_dir_edit,
             self.temperature_stop_on_abort_checkbox,
+            self.temperature_syncing,
         ):
             widget.setEnabled(enabled)
 
@@ -1130,6 +1141,7 @@ class method_configuration_dialog(QDialog):
             tolerance_c=tolerance_c,
             log_dir=self.temperature_log_dir_edit.text().strip() or None,
             stop_on_abort=self.temperature_stop_on_abort_checkbox.isChecked(),
+            sync_channels=self.temperature_syncing.isChecked(),
         )
 
     def build_aurora_export_settings(self) -> AuroraExportSettings:

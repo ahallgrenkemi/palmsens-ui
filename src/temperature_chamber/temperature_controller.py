@@ -27,6 +27,7 @@ class TemperatureSettings:
     tolerance_c: float = 0.5
     log_dir: str | None = None
     stop_on_abort: bool = True
+    sync_channels: bool = False
 
 
 @dataclass(frozen=True)
